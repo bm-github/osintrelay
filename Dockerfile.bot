@@ -1,17 +1,52 @@
-FROM python:3.14-slim
+# Dockerfile.bot
+#
+# Bot image for Discord/Telegram continuous monitoring
+#
+# Build:
+#   docker build -t osint-bot -f Dockerfile.bot .
+#
+# Run:
+#   docker run --rm -v $(pwd)/data:/app/data -v $(pwd)/logs:/app/logs \
+#     --env-file .env osint-bot
+#
+# Or with docker compose:
+#   docker compose up -d bot
+
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
-# Install Python dependencies first (better build caching).
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libmagic1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Python dependencies first (better build caching)
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy agent code (prompts, fetchers, etc.).
+# Copy agent code (prompts, fetchers, etc.)
 COPY socialosintagent /app/socialosintagent
 
-# Create runtime dirs expected by the app.
-RUN mkdir -p /app/data /app/logs
+# Create runtime directories expected by the app
+RUN mkdir -p /app/data /app/data/cache /app/data/media /app/data/outputs /app/data/sessions /app/logs \
+    && chmod 755 /app/data /app/logs
 
-# Default command: run the Discord ChatOps bot.
-CMD ["python", "-m", "socialosintagent.discord_handler"]
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser \
+    && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Default command: run the bot
+CMD ["python", "-m", "socialosintagent.bot"]
 

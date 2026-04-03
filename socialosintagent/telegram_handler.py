@@ -25,7 +25,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 import re
 
@@ -53,6 +53,32 @@ DEFAULT_ANALYSIS_QUERY = (
     "recurring topics, communication style, and any notable patterns visible in "
     "the collected posts and profile. Use clear Markdown headings."
 )
+
+
+def _build_vision_error_summary(vision_stats: Dict[str, Any]) -> str:
+    """Build user-friendly error summary for Telegram."""
+    total = vision_stats.get("total", 0)
+    analyzed = vision_stats.get("analyzed", 0)
+    failed = vision_stats.get("failed", 0)
+    skipped = vision_stats.get("skipped", 0)
+    error_summaries = vision_stats.get("error_summaries", [])
+
+    msg = "📸 *Image Analysis Summary:*\n\n"
+    msg += f"✅ {analyzed}/{total} images analyzed successfully\n"
+
+    if failed > 0:
+        msg += f"❌ {failed} images failed\n"
+    if skipped > 0:
+        msg += f"⏭️ {skipped} images skipped\n"
+
+    if error_summaries:
+        msg += "\n*Issues:*\n"
+        for summary in error_summaries[:5]:  # Limit to top 5 to avoid spam
+            msg += f"• {summary}\n"
+        if len(error_summaries) > 5:
+            msg += f"\n... and {len(error_summaries) - 5} more issues. Check logs for details.\n"
+
+    return msg
 
 
 def chunk_telegram_text(text: str, max_len: int = TELEGRAM_MAX_LEN) -> List[str]:
@@ -298,6 +324,12 @@ async def handle_analyze(message: Message, agent: SocialOSINTAgent) -> None:
     for i, chunk in enumerate(chunks):
         prefix = f"(part {i + 1}/{len(chunks)})\n\n" if len(chunks) > 1 else ""
         await message.answer(prefix + chunk)
+
+    # Send image processing error summary if there were failures
+    vision_stats = result.get("metadata", {}).get("vision_stats", {})
+    if vision_stats.get("failed", 0) > 0 or vision_stats.get("skipped", 0) > 0:
+        error_msg = _build_vision_error_summary(vision_stats)
+        await message.answer(error_msg)
 
 
 async def handle_monitor(message: Message, agent: SocialOSINTAgent) -> None:

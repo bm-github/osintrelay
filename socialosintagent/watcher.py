@@ -97,6 +97,17 @@ class MonitoringWatcher:
         self.poll_interval_seconds = poll_interval_seconds
         self.fetch_limit = fetch_limit
         self.triage_post_limit = triage_post_limit
+        self.last_periodic_status_at: Optional[datetime] = None
+        self.startup_check_sent = False
+
+    def _get_platform_status_text(self) -> str:
+        """Shared logic to build the platform status list."""
+        available = self.agent.client_manager.get_available_platforms(check_creds=True)
+        status_text = ""
+        for p in sorted(FETCHERS.keys()):
+            icon = "✅" if p in available else "❌"
+            status_text += f"{icon} {p.capitalize()}\n"
+        return status_text
 
     async def send_telegram_alert(self, chat_id: int, text: str) -> None:
         if self.telegram_bot is None:
@@ -128,7 +139,14 @@ class MonitoringWatcher:
             return
         from .discord_handler import send_discord_channel_alert as _send
 
-        await _send(self.discord_bot, channel_id, text)
+        if isinstance(text, (str, bytes)):
+            await _send(self.discord_bot, channel_id, text)
+        else:
+            # Assume it's an embed
+            channel = self.discord_bot.get_channel(channel_id)
+            if channel is None:
+                channel = await self.discord_bot.fetch_channel(channel_id)
+            await channel.send(embed=text)
 
     async def send_rule_alert(self, rule: Dict[str, Any], text: str) -> None:
         alert_type = rule.get("alert_type")
@@ -297,6 +315,9 @@ class MonitoringWatcher:
         return True
 
     async def run_forever(self) -> None:
+        # Start startup health check as a background task so it doesn't block evaluation
+        asyncio.create_task(self._send_startup_health_checks())
+
         while True:
             try:
                 await self._run_once()
@@ -304,7 +325,85 @@ class MonitoringWatcher:
                 logger.exception("Watcher iteration failed: %s", e)
             await asyncio.sleep(self.poll_interval_seconds)
 
+    async def _send_startup_health_checks(self) -> None:
+        """Unified startup health check for all active bots."""
+        if self.startup_check_sent:
+            return
+            
+        # 1. Handle Telegram (can send immediately)
+        health_telegram = os.getenv("TELEGRAM_HEALTH_CHECK_CHAT_ID")
+        if health_telegram and self.telegram_bot:
+            try:
+                status = self._get_platform_status_text()
+                msg = f"🟢 **OSINT Relay Online (Telegram)**\n\n**Platforms:**\n{status}\n**System:**\n• Version: 1.0.0"
+                await self.send_telegram_alert(int(health_telegram), msg)
+                logger.info("Sent Telegram startup health check.")
+            except Exception as e:
+                logger.warning(f"Failed to send Telegram startup check: {e}")
+
+        # 2. Handle Discord (must wait for bot to be ready)
+        health_discord = os.getenv("DISCORD_HEALTH_CHECK_CHANNEL_ID")
+        if health_discord and self.discord_bot:
+            try:
+                # Wait up to 30 seconds for Discord to connect
+                for _ in range(30):
+                    if getattr(self.discord_bot, "is_ready", lambda: False)():
+                        break
+                    await asyncio.sleep(1)
+                
+                if self.discord_bot.is_ready():
+                    import discord
+                    status = self._get_platform_status_text()
+                    embed = discord.Embed(
+                        title="🟢 OSINT Relay Online (Discord)",
+                        description="Bot has started and is ready for commands.",
+                        color=discord.Color.green(),
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    embed.add_field(name="Platforms", value=status, inline=True)
+                    embed.add_field(name="System", value=f"**Latency:** {round(self.discord_bot.latency * 1000)}ms\n**Version:** 1.0.0", inline=True)
+                    
+                    await self.send_discord_channel_alert(int(health_discord), embed)
+                    logger.info("Sent Discord startup health check.")
+            except Exception as e:
+                logger.warning(f"Failed to send Discord startup check: {e}")
+
+        self.startup_check_sent = True
+
+    async def _send_periodic_status(self) -> None:
+        """Send a periodic 'Bot is online' status message."""
+        now = datetime.now(timezone.utc)
+        
+        # Check if 30 minutes (1800 seconds) have passed
+        if self.last_periodic_status_at and (now - self.last_periodic_status_at).total_seconds() < 1800:
+            return
+            
+        self.last_periodic_status_at = now
+        
+        status_msg = f"⏱ **Periodic Status Check**\nBot is online and monitoring. Next check in 30 minutes.\nTimestamp: `{now.strftime('%Y-%m-%d %H:%M:%S UTC')}`"
+        
+        # Discord Channel notification
+        health_discord = os.getenv("DISCORD_HEALTH_CHECK_CHANNEL_ID")
+        if health_discord and self.discord_bot:
+            try:
+                await self.send_discord_channel_alert(int(health_discord), status_msg)
+                logger.info("Sent periodic status check to Discord.")
+            except Exception as e:
+                logger.warning(f"Failed to send periodic status to Discord: {e}")
+                
+        # Telegram notification
+        health_telegram = os.getenv("TELEGRAM_HEALTH_CHECK_CHAT_ID")
+        if health_telegram and self.telegram_bot:
+            try:
+                await self.send_telegram_alert(int(health_telegram), status_msg)
+                logger.info("Sent periodic status check to Telegram.")
+            except Exception as e:
+                logger.warning(f"Failed to send periodic status to Telegram: {e}")
+
     async def _run_once(self) -> None:
+        # Periodic status check
+        await self._send_periodic_status()
+
         any_updates = 0
         for path in self.session_manager.sessions_dir.glob("*.json"):
             session_id = path.stem

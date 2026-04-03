@@ -1,0 +1,61 @@
+# Dockerfile.agent
+#
+# CLI-only image. No web server or frontend assets included.
+# Lightweight image optimized for one-off analyses.
+#
+# Build:
+#   docker build -t osint-agent -f Dockerfile.agent .
+#
+# Run interactive CLI:
+#   docker run --rm -it -v $(pwd)/data:/app/data -v $(pwd)/logs:/app/logs \
+#     --env-file .env osint-agent
+#
+# Run offline mode:
+#   docker run --rm -it -v $(pwd)/data:/app/data -v $(pwd)/logs:/app/logs \
+#     --env-file .env osint-agent --offline
+#
+# Run with stdin JSON input:
+#   docker run --rm -v $(pwd)/data:/app/data -v $(pwd)/logs:/app/logs \
+#     --env-file .env osint-agent --stdin < query.json
+#
+# Or with docker compose:
+#   docker compose --profile cli run --rm agent
+#   docker compose --profile cli run --rm agent --offline
+#   docker compose --profile cli run --rm -T agent --stdin < query.json
+
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install ONLY core agent dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy ONLY the agent package
+COPY socialosintagent/ ./socialosintagent/
+
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/data /app/data/cache /app/data/media /app/data/outputs /app/data/sessions /app/logs \
+    && chmod 755 /app/data /app/logs
+
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser \
+    && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Use ENTRYPOINT so --stdin, --offline, etc., append properly
+ENTRYPOINT ["python", "-m", "socialosintagent.main"]

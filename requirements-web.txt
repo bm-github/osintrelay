@@ -1,0 +1,25 @@
+# Web server dependencies — in addition to requirements.txt (core agent deps)
+#
+# Install both:
+#   pip install -r requirements.txt
+#   pip install -r requirements-web.txt
+#
+# Or together:
+#   pip install -r requirements.txt -r requirements-web.txt
+
+# ASGI server — production-grade, supports HTTP/1.1 and HTTP/2
+uvicorn[standard]>=0.30.0
+
+# Web framework — async-native, automatic OpenAPI docs
+fastapi>=0.111.0
+
+# Static file serving (used by FastAPI.mount for the frontend)
+# Included in fastapi[standard] but listed explicitly for clarity
+aiofiles>=23.0.0
+
+# Request validation models (used by api_models.py)
+# Pydantic v2 ships with fastapi>=0.100 — listed here for explicit pinning
+pydantic>=2.0.0
+
+# python-multipart needed for form data support in FastAPI
+python-multipart>=0.0.9

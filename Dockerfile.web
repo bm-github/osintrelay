@@ -1,0 +1,69 @@
+# Dockerfile.web
+#
+# Web server image with interactive UI and REST API
+#
+# Build:
+#   docker build -t osint-web -f Dockerfile.web .
+#
+# Run:
+#   docker run --rm -p 8000:8000 -v $(pwd)/data:/app/data -v $(pwd)/logs:/app/logs \
+#     --env-file .env osint-web
+#
+# Or with docker compose:
+#   docker compose up -d web
+
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libmagic1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install core agent dependencies first (better layer caching)
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install web server dependencies
+COPY requirements-web.txt ./requirements-web.txt
+RUN pip install --no-cache-dir -r requirements-web.txt
+
+# Copy the full agent package
+COPY socialosintagent/ ./socialosintagent/
+
+# Copy the static frontend (index.html and any other assets)
+COPY static/ ./static/
+
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/data /app/data/cache /app/data/media /app/data/outputs /app/data/sessions /app/logs \
+    && chmod 755 /app/data /app/logs
+
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser \
+    && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run uvicorn with production settings
+CMD ["uvicorn", "socialosintagent.web_server:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--log-level", "info", \
+     "--workers", "1"]

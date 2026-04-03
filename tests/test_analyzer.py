@@ -27,10 +27,14 @@ from socialosintagent.utils import UserData
 
 # Fixtures
 
+
 @pytest.fixture
 def mock_dependencies(mocker):
     """Provides mocked versions of the agent's dependencies."""
     mock_cache = create_autospec(CacheManager, instance=True)
+    # Add is_offline attribute that's needed by the async vision analysis
+    mock_cache.is_offline = False
+    mock_cache.base_dir = mocker.MagicMock()
     with patch("socialosintagent.llm._load_prompt", return_value="mock prompt"):
         mock_llm = create_autospec(LLMAnalyzer, instance=True)
     mock_client_manager = create_autospec(ClientManager, instance=True)
@@ -74,7 +78,9 @@ def offline_agent(mock_dependencies, monkeypatch):
     mock_cache, mock_llm, mock_client_manager = mock_dependencies
     return SocialOSINTAgent(args, mock_cache, mock_llm, mock_client_manager)
 
+
 # TEST
+
 
 def test_analyze_method_orchestration(agent, mocker):
     """Tests the main analyze() method's orchestration with the UserData model."""
@@ -86,7 +92,7 @@ def test_analyze_method_orchestration(agent, mocker):
                 "media": [
                     {
                         "local_path": "/fake/path/image.jpg",
-                        "url": "http://example.com/image.jpg",
+                        "url": "http://pbs.twimg.com/image.jpg",
                     }
                 ],
             }
@@ -97,40 +103,37 @@ def test_analyze_method_orchestration(agent, mocker):
     mock_twitter_client = MagicMock()
     agent.client_manager.get_platform_client.return_value = mock_twitter_client
 
+    # Mock Path operations
     mocker.patch("pathlib.Path.exists", return_value=True)
     path_mock = mocker.patch("socialosintagent.analyzer.Path")
     path_mock.return_value.suffix = ".jpg"
     path_mock.return_value.exists.return_value = True
+    path_mock.return_value.stat.return_value.st_size = 1000
+    path_mock.return_value.unlink.return_value = None
 
     mocker.patch("socialosintagent.analyzer.FETCHERS", {"twitter": mock_fetcher})
 
-    # Mock ImageProcessor to avoid real file system access and ensure callback execution
+    # Mock async download function to return a valid path
+    async def mock_download(*args, **kwargs):
+        return path_mock.return_value
+
+    mocker.patch(
+        "socialosintagent.analyzer.download_media_async", side_effect=mock_download
+    )
+
+    # Mock ImageProcessor to avoid real file system access
     mock_processor = mocker.MagicMock()
     agent.image_processor = mock_processor
 
-    def side_effect(file_path, analyze_func, **kwargs):
-        # Simulate successful analysis call
-        # Extract args passed to process_single_image to satisfy the autospec signature of analyze_func
-        source_url = kwargs.get("source_url", "http://example.com/image.jpg")
-        context = kwargs.get("context", "")
-        
-        # Call the mocked analyze_func with required arguments
-        res = analyze_func(file_path, source_url=source_url, context=context)
-        
-        return ImageProcessingResult(
-            url=source_url,
-            status=ProcessingStatus.SUCCESS,
-            analysis=res,
-            local_path=file_path
-        )
+    # Mock preprocess_image_async to return a processed path
+    async def mock_preprocess(*args, **kwargs):
+        return path_mock.return_value
 
-    mock_processor.process_single_image.side_effect = side_effect
+    mock_processor.preprocess_image_async.side_effect = mock_preprocess
 
     agent.llm.analyze_image.return_value = "This is an image analysis."
 
     # run_analysis returns a (report_str, entities_dict) tuple.
-    # Setting return_value to a plain string caused a ValueError at the
-    # `report, entities = self.llm.run_analysis(...)` unpack in analyzer.py.
     agent.llm.run_analysis.return_value = ("This is the final report.", {})
 
     platforms_to_query = {"twitter": ["testuser"]}
@@ -148,7 +151,9 @@ def test_analyze_method_orchestration(agent, mocker):
     assert result["report"].endswith("This is the final report.")
     assert not result["error"]
 
+
 # FetchResult unit tests
+
 
 class TestFetchResult:
     def test_initial_state(self):
@@ -199,7 +204,9 @@ class TestFetchResult:
         fr = FetchResult()
         assert fr.get_summary() == "no results"
 
+
 # analyze() error paths
+
 
 class TestAnalyzeErrorPaths:
     def test_all_fetches_fail_returns_error_dict(self, agent, mocker):
@@ -239,9 +246,7 @@ class TestAnalyzeErrorPaths:
         def fetcher(**kwargs):
             return mock_data
 
-        mocker.patch(
-            "socialosintagent.analyzer.FETCHERS", {"hackernews": fetcher}
-        )
+        mocker.patch("socialosintagent.analyzer.FETCHERS", {"hackernews": fetcher})
         offline_agent.client_manager.get_platform_client.return_value = None
 
         # run_analysis returns a (report_str, entities_dict) tuple.
@@ -258,7 +263,9 @@ class TestAnalyzeErrorPaths:
         assert not result["error"]
         assert "Offline report content." in result["report"]
 
+
 # process_stdin validation
+
 
 class TestProcessStdin:
     def _run_stdin(self, agent, json_input):

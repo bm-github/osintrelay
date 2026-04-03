@@ -1,0 +1,10 @@
+{
+  "platforms": {
+    "twitter": ["nasa"],
+    "reddit": ["science"]
+  },
+  "query": "What are the recent announcements and discoveries from these science-focused accounts?",
+  "fetch_options": {
+    "default_count": 10
+  }
+}

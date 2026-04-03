@@ -132,9 +132,57 @@ echo '{
 
 ### 6. Docker
 
+OSINT Relay includes comprehensive Docker support with three main services:
+
+**Quick Start:**
+
 ```bash
-docker compose up --build
+# Copy environment configuration
+cp .env.docker.example .env
+# Edit .env with your credentials
+
+# Build and start all services
+make build-all
+make up
+
+# Access web interface at http://localhost:8000
 ```
+
+**Available Services:**
+
+- **Web Server** - Interactive UI and REST API (port 8000)
+- **Bot Service** - Continuous Discord/Telegram monitoring
+- **CLI Agent** - One-off analyses from command line
+
+**Common Docker Commands:**
+
+```bash
+# Using Make (recommended)
+make build-all          # Build all images
+make up                 # Start web and bot services
+make up-web             # Start web only
+make up-bot             # Start bot only
+make down               # Stop all services
+make logs               # View logs
+make agent              # Run CLI agent in Docker
+
+# Using Docker Compose directly
+docker compose up -d web bot
+docker compose logs -f
+docker compose run --rm -it agent
+docker compose run --rm -T agent --stdin < query.json
+```
+
+**Local Development with Docker:**
+
+```bash
+# Start with code mounting for live reload
+make dev-up
+make dev-logs
+make dev-down
+```
+
+For complete Docker documentation, see [DOCKER.md](DOCKER.md).
 
 Runs the bot as a continuous daemon. Data persists in `./data/` via bind mount.
 

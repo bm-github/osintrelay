@@ -1,0 +1,61 @@
+# Docker Compose configuration for local development
+# This file mounts the source code for live reload development
+# Usage: docker compose -f docker-compose.dev.yml up -d web
+
+version: '3.8'
+
+services:
+  # Development web server with code mounting
+  web-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: osint-web-dev
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Mount source code for live development
+      - ./socialosintagent:/app/socialosintagent
+      - ./static:/app/static
+      # Mount data and logs directories
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Prevent overwriting local __pycache__
+      - /app/socialosintagent/__pycache__
+      - /app/socialosintagent/platforms/__pycache__
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    restart: unless-stopped
+    # Override command to disable bytecode compilation for faster reloads
+    command: ["uvicorn", "socialosintagent.web_server:app", \
+              "--host", "0.0.0.0", \
+              "--port", "8000", \
+              "--log-level", "debug", \
+              "--reload"]
+
+  # Development bot with code mounting
+  bot-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: osint-bot-dev
+    env_file:
+      - .env
+    working_dir: /app
+    volumes:
+      # Mount source code for live development
+      - ./socialosintagent:/app/socialosintagent
+      # Mount data and logs directories
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Prevent overwriting local __pycache__
+      - /app/socialosintagent/__pycache__
+      - /app/socialosintagent/platforms/__pycache__
+    command: ["python", "-m", "socialosintagent.bot"]
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1

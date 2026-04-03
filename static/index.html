@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OSINT Relay - Social Intelligence Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&family=Syne:wght@600;700;800&display=swap">
+<link rel="stylesheet" href="/css/styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.25s;
+    animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Topbar -->
+  <header id="topbar">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/>
+          <path d="M11 8v6M8 11h6"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-name">OSINT Relay</div>
+        <div class="brand-sub">Social Intelligence Platform</div>
+      </div>
+    </div>
+
+    <div id="global-status">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Ready</span>
+    </div>
+
+    <div class="topbar-spacer"></div>
+
+    <button class="tb-btn" id="btn-cache-mgr">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+      Cache
+    </button>
+    <button class="tb-btn" id="btn-new-session">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      New Session
+    </button>
+    <div class="theme-selector" id="theme-selector">
+      <button class="theme-btn" data-theme="auto" title="Auto (follows system)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button class="theme-btn" data-theme="light" title="Light theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      </button>
+      <button class="theme-btn" data-theme="tactical" title="Tactical dark theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <div id="main">
+    <!-- Drawer Overlay -->
+    <div id="drawer-overlay" class="drawer-overlay"></div>
+
+    <!-- Left Edge Trigger -->
+    <div id="left-edge-trigger" class="edge-trigger left-edge-trigger" title="Sessions - Hover or click to open">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+      <span class="edge-trigger-label">Sessions</span>
+      <span class="edge-trigger-badge hidden" id="left-edge-badge">0</span>
+    </div>
+
+    <!-- Left Drawer: Sessions -->
+    <aside id="left-drawer" class="drawer left-drawer">
+      <div class="drawer-header">
+        <div class="sidebar-section-header">
+          <h2>Sessions</h2>
+        </div>
+        <div class="drawer-controls">
+          <button class="drawer-pin-btn" id="left-pin-btn" title="Pin drawer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          </button>
+          <button class="drawer-close-btn" id="left-close-btn" title="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+      <nav id="sidebar">
+        <div id="session-list"></div>
+        <div class="resize-handle" id="sidebar-resize"></div>
+      </nav>
+    </aside>
+
+    <!-- Workspace -->
+    <div id="workspace">
+      <!-- Empty state -->
+      <div id="empty-state">
+        <div class="empty-illustration">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="M16.5 16.5L21 21"/>
+          </svg>
+        </div>
+        <h3>No Session Selected</h3>
+        <p>Create a new investigation session or select one from the sidebar.</p>
+        <button class="tb-btn primary" onclick="document.getElementById('btn-new-session').click()" style="margin-top:8px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          New Session
+        </button>
+      </div>
+
+      <!-- Session workspace -->
+      <div id="session-workspace">
+        <div id="session-header">
+          <div id="session-title" contenteditable="true" spellcheck="false"></div>
+          <button class="tb-btn primary" id="btn-export-session" title="Export full readable investigation report">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+            Export Full Report (MD)
+          </button>
+          <button class="tb-btn" id="btn-manage-targets">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Targets
+          </button>
+          <button class="tb-btn" id="btn-delete-session" style="color:var(--text-tertiary)">Delete</button>
+        </div>
+
+        <!-- Target chips -->
+        <div id="target-chips">
+          <form id="add-target-form" onsubmit="return false;">
+            <select id="add-platform-select" class="inline-select">
+              <option value="twitter">twitter</option>
+              <option value="reddit">reddit</option>
+              <option value="github">github</option>
+              <option value="bluesky">bluesky</option>
+              <option value="mastodon">mastodon</option>
+              <option value="hackernews">hackernews</option>
+            </select>
+            <input id="add-username-input" class="inline-input" type="text" placeholder="username" autocomplete="off" autocorrect="off" spellcheck="false">
+            <button class="add-btn" type="submit" title="Add">+</button>
+          </form>
+        </div>
+
+        <!-- Query bar -->
+        <div id="query-bar" class="query-bar">
+          <div class="query-main">
+            <input id="query-input" type="text" placeholder="What are you investigating? e.g. 'Identify network connections and travel patterns'" autocomplete="off">
+            <div class="query-control">
+              <span>Posts</span>
+              <input type="number" id="fetch-count-input" value="50" min="10" max="200" step="10">
+            </div>
+            <label class="query-control">
+              <input type="checkbox" id="force-refresh-check">
+              <span>Force refresh</span>
+            </label>
+            <button class="run-btn" id="run-analysis-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Run Analysis
+            </button>
+          </div>
+          <div id="query-expanded" class="query-expanded">
+            <div class="query-options">
+              <div class="query-option-group">
+                <label class="query-option-label">Query Type</label>
+                <select id="query-type-select" class="query-select">
+                  <option value="general">General Analysis</option>
+                  <option value="sentiment">Sentiment Analysis</option>
+                  <option value="network">Network Connections</option>
+                  <option value="timeline">Temporal Patterns</option>
+                  <option value="geolocation">Geolocation</option>
+                </select>
+              </div>
+              <div class="query-option-group">
+                <label class="query-option-label">Template</label>
+                <select id="query-template-select" class="query-select">
+                  <option value="">Custom Query</option>
+                  <option value="network">Network Analysis: Identify connections and interaction patterns</option>
+                  <option value="behavior">Behavioral: Analyze posting patterns and activity</option>
+                  <option value="sentiment">Sentiment: Determine emotional tone and opinions</option>
+                  <option value="entities">Entity Extraction: Extract people, locations, organizations</option>
+                </select>
+              </div>
+            </div>
+            <div class="query-hint">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+              <span>Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to run, <kbd>Escape</kbd> to collapse</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Content area -->
+        <div id="content-area">
+          <!-- History sidebar -->
+          <div id="history-sidebar">
+            <div class="panel-header"><h3>History</h3></div>
+            <div id="history-list"></div>
+            <div class="resize-handle" id="history-resize"></div>
+          </div>
+
+          <!-- Center panel -->
+          <div id="center-panel">
+            <div class="center-tabs">
+              <button class="center-tab-btn active" data-center-tab="report">Report</button>
+              <button class="center-tab-btn" data-center-tab="timeline">Timeline</button>
+            </div>
+            
+            <!-- Progress view -->
+            <div id="progress-view">
+              <div class="progress-header">
+                <div class="spinner"></div>
+                <div class="progress-label" id="progress-stage-label">Initialising...</div>
+              </div>
+              <div id="progress-log"></div>
+            </div>
+
+            <!-- Report view -->
+            <div id="report-view" class="center-pane visible">
+              <div id="report-toolbar">
+                <div class="report-query-badge">
+                  <strong>Query:</strong> <span id="report-query-label-text"></span>
+                </div>
+                <button class="tb-btn" id="btn-download-md" title="Download report as Markdown">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Download MD
+                </button>
+                <button class="tb-btn" id="btn-copy-report">Copy</button>
+              </div>
+              <div id="report-content"></div>
+            </div>
+            
+            <!-- Timeline view -->
+            <div id="timeline-view" class="center-pane">
+              <div class="timeline-section">
+                <h2 class="timeline-title">Chronological Activity</h2>
+                <p class="timeline-subtitle">Distribution of posts over historical time.</p>
+                <div id="chronological-container">
+                  <div class="timeline-empty">Loading timeline...</div>
+                </div>
+              </div>
+              
+              <hr class="divider" style="margin: 32px 0;">
+
+              <div class="timeline-section">
+                <h2 class="timeline-title">Pattern of Life (Post Frequency)</h2>
+                <p class="timeline-subtitle">Aggregate volume by day of week and hour (UTC) across all historical posts.</p>
+                <div id="heatmap-container">
+                  <div class="timeline-empty">Loading heatmap...</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Right Edge Trigger -->
+          <div id="right-edge-trigger" class="edge-trigger right-edge-trigger" title="Intelligence - Hover or click to open">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M16.5 16.5L21 21"/></svg>
+            <span class="edge-trigger-label">Intelligence</span>
+            <span class="edge-trigger-badge hidden" id="right-edge-badge">0</span>
+          </div>
+
+          <!-- Right Drawer: Contacts + Entities + Media -->
+          <aside id="right-drawer" class="drawer right-drawer">
+            <div class="drawer-header">
+              <div class="tab-bar">
+                <button class="tab-btn active" data-tab="contacts">
+                  Contacts
+                  <span class="tab-badge" id="contacts-badge" style="display:none">0</span>
+                </button>
+                <button class="tab-btn" data-tab="entities">Entities</button>
+                <button class="tab-btn" data-tab="media">Media</button>
+              </div>
+              <div class="drawer-controls">
+                <button class="drawer-pin-btn" id="right-pin-btn" title="Pin drawer">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                </button>
+                <button class="drawer-close-btn" id="right-close-btn" title="Close">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+            </div>
+            <div id="right-panel">
+              <div class="resize-handle" style="left:-3px;right:auto;" id="right-resize"></div>
+
+
+            <!-- Contacts tab -->
+            <div class="tab-pane active" id="contacts-tab">
+              <div id="contacts-toolbar">
+                <input class="contacts-search" id="contacts-search" type="text" placeholder="Filter contacts…" autocomplete="off">
+                <button class="tb-btn" id="btn-toggle-dismissed" title="Show dismissed contacts" style="display:none;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 13c0 3.31-2.69 6-6 6s-6-2.69-6-6 2.69-6 6-6 6 2.69 6 6zM12 3v2M12 19v2M5.64 5.64l1.41 1.41M16.95 16.95l1.41 1.41M3 12h2M19 12h2M5.64 18.36l1.41-1.41M16.95 7.05l1.41-1.41"/></svg>
+                </button>
+                <button class="tb-btn" id="btn-refresh-contacts" title="Refresh contacts">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </button>
+              </div>
+              <div id="graph-container">
+                <div class="graph-empty" id="graph-empty">
+                  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+                  <span>Run an analysis to<br>build the network graph</span>
+                </div>
+              </div>
+              <div id="contacts-list">
+                <div class="contacts-empty" id="contacts-empty">
+                  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                  No contacts discovered yet. Run an analysis to extract network contacts.
+                </div>
+              </div>
+            </div>
+
+            <!-- Entities tab -->
+            <div class="tab-pane" id="entities-tab">
+              <div id="entities-content">
+                <div style="color:var(--text-tertiary);text-align:center;padding:32px 16px;font-size:11px;">Run an analysis to extract selectors (emails, locations, crypto, etc.)</div>
+              </div>
+            </div>
+
+            <!-- Media tab -->
+            <div class="tab-pane" id="media-tab">
+              <div class="media-grid" id="media-grid-content">
+                <div style="grid-column:1/-1;color:var(--text-tertiary);text-align:center;padding:32px 16px;font-size:11px;">No media files downloaded yet.</div>
+              </div>
+            </div>
+
+            </div>
+          </aside><!-- /right-drawer -->
+        </div><!-- /content-area -->
+      </div><!-- /session-workspace -->
+    </div><!-- /workspace -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- Modals -->
+<div id="modal-overlay">
+  <!-- Dynamic Modal Content Area -->
+  <div class="modal" id="modal"></div>
+</div>
+
+<!-- Notifications -->
+<div id="notifications"></div>
+
+<!-- Custom Tooltip for D3 Charts -->
+<div id="d3-tooltip" class="chart-tooltip"></div>
+
+<!-- Application Script -->
+<script src="/js/app.js"></script>
+</body>
+</html>

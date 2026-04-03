@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -240,6 +241,89 @@ def download_media(
         final_path = media_dir / f"{url_hash}{ext}"
         final_path.write_bytes(resp.content)
         return final_path
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise RateLimitExceededError(f"{platform} Media Download")
+        logger.error(f"HTTP error downloading {url}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Media download failed for {url}: {e}", exc_info=False)
+        return None
+
+
+async def download_media_async(
+    base_dir: Path,
+    url: str,
+    is_offline: bool,
+    platform: str,
+    auth_details: Optional[Dict[str, Any]] = None,
+    allow_external: bool = False,
+) -> Optional[Path]:
+    """
+    Async version of download_media for parallel downloads.
+
+    Downloads media from a URL to local cache with async HTTP requests.
+    Returns the path to the downloaded file or None if download fails.
+    """
+    if not is_offline and not allow_external:
+        domain = urlparse(url).netloc.lower()
+        if platform in SAFE_CDN_DOMAINS:
+            if domain not in SAFE_CDN_DOMAINS[platform]:
+                logger.warning(
+                    f"Security: Blocked download from external domain '{domain}' for {platform}. Use --unsafe-allow-external-media to bypass."
+                )
+                return None
+
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    media_dir = base_dir / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+
+    for ext in SUPPORTED_IMAGE_EXTENSIONS + [".mp4", ".webm"]:
+        existing_path = media_dir / f"{url_hash}{ext}"
+        if existing_path.exists():
+            logger.debug(f"Media cache hit: {existing_path}")
+            return existing_path
+
+    if is_offline:
+        logger.warning(
+            f"Offline mode: Media {url} not in local cache. Skipping download."
+        )
+        return None
+
+    valid_types = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+    }
+
+    try:
+        auth_headers = {}
+        if auth_details:
+            if platform == "twitter" and auth_details.get("bearer_token"):
+                auth_headers["Authorization"] = f"Bearer {auth_details['bearer_token']}"
+            elif platform == "bluesky" and auth_details.get("access_jwt"):
+                auth_headers["Authorization"] = f"Bearer {auth_details['access_jwt']}"
+
+        headers = {"User-Agent": "SocialOSINTAgent", **auth_headers}
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=REQUEST_TIMEOUT
+        ) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+
+        content_type = resp.headers.get("content-type", "").split(";")[0].strip()
+        ext = valid_types.get(content_type)
+        if not ext:
+            logger.warning(f"Unsupported media type '{content_type}' for URL: {url}.")
+            return None
+
+        final_path = media_dir / f"{url_hash}{ext}"
+        final_path.write_bytes(resp.content)
+        return final_path
+
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
             raise RateLimitExceededError(f"{platform} Media Download")

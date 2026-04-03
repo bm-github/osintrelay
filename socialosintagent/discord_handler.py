@@ -29,9 +29,10 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import discord
+from discord import app_commands
 from discord.ext import commands as dcommands
 from dotenv import load_dotenv
 
@@ -75,21 +76,31 @@ def chunk_discord_text(text: str, max_len: int = DISCORD_MAX_LEN) -> List[str]:
     return chunks
 
 
-def parse_analyze_command(text: str) -> Optional[Tuple[str, str]]:
+def parse_analyze_command(text: str) -> Optional[Tuple[str, str, Optional[str]]]:
     parts = (text or "").split(maxsplit=1)
     if len(parts) < 2:
         return None
     arg = parts[1].strip()
     if "/" not in arg:
         return None
-    platform_raw, user_raw = arg.split("/", 1)
+
+    # Split by "/" once to get platform
+    platform_raw, rest = arg.split("/", 1)
     platform = platform_raw.lower().strip()
-    if not platform or not user_raw.strip():
+
+    # Split rest by space to get username and optional query
+    rest_parts = rest.split(maxsplit=1)
+    username_raw = rest_parts[0].strip()
+    query = rest_parts[1].strip() if len(rest_parts) > 1 else None
+
+    if not platform or not username_raw:
         return None
-    username = sanitize_username(user_raw.strip())
+
+    username = sanitize_username(username_raw)
     if not username:
         return None
-    return platform, username
+
+    return platform, username, query
 
 
 def _strip_outer_quotes(text: str) -> str:
@@ -160,6 +171,10 @@ class DiscordChatOpsBot(dcommands.Bot):
             command_prefix="?", intents=intents, help_command=None, **kwargs
         )
         self.agent = agent
+        self.start_time = datetime.now(timezone.utc)
+
+    async def on_ready(self) -> None:
+        logger.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
 
     async def setup_hook(self) -> None:
         await self.add_cog(AnalyzeCog(self))
@@ -170,54 +185,97 @@ class DiscordChatOpsBot(dcommands.Bot):
         await self.add_cog(StatusCog(self))
         await self.add_cog(SessionsCog(self))
         await self.add_cog(HelpCog(self))
+        await self.tree.sync()
 
 
 class HelpCog(dcommands.Cog):
     def __init__(self, bot: DiscordChatOpsBot):
         self.bot = bot
 
-    @dcommands.command(name="help", description="Show usage instructions")
-    async def help_command(self, ctx: dcommands.Context) -> None:
+    async def _send_help(
+        self, target_obj: discord.Message | discord.Interaction
+    ) -> None:
+        send = (
+            target_obj.followup.send
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.send
+        )
         msg = (
-            "**OSINT ChatOps bot**\n\n"
+            "**OSINT ChatOps bot (Slash Command Edition)**\n\n"
             "**Analysis Commands:**\n"
-            "`?analyze <platform>/<username>` — default OSINT query\n"
-            "`?analyze <platform>/<username> <query>` — custom query\n"
-            "`?refresh <platform>/<username>` — force refresh + analyze\n"
-            "`?contacts <platform>/<username>` — extract network contacts\n\n"
+            "`/analyze platform username [query]` — default or custom OSINT query\n"
+            "`/refresh platform username [query]` — force refresh + analyze\n"
+            "`/contacts platform username` — extract network contacts\n\n"
             "**Monitoring Commands:**\n"
-            '`?monitor <platform>/<username> for keywords "crypto, wallet"`\n'
-            "`?listmonitors` — list active monitoring rules\n"
-            "`?stopmonitor <rule_id>` — stop a monitoring rule\n\n"
+            '`/monitor platform username keywords="crypto, wallet"`\n'
+            "`/listmonitors` — list active monitoring rules\n"
+            "`/stopmonitor rule_id` — stop a monitoring rule\n\n"
             "**Management Commands:**\n"
-            "`?status` — bot health and platform status\n"
-            "`?sessions` — list active sessions\n\n"
+            "`/status` — bot health and platform status\n"
+            "`/sessions` — list active sessions\n\n"
             "Supported platforms: "
             f"{', '.join(sorted(FETCHERS.keys()))}\n\n"
             "Same engine as the CLI; ensure LLM and platform credentials are in `.env`."
         )
-        await ctx.send(msg)
+        await send(msg)
+
+    @dcommands.command(name="help", description="Show usage instructions")
+    async def help_command(self, ctx: dcommands.Context) -> None:
+        await self._send_help(ctx.message)
+
+    @app_commands.command(name="help", description="Show usage instructions")
+    async def help_slash(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        await self._send_help(interaction)
 
 
 class AnalyzeCog(dcommands.Cog):
     def __init__(self, bot: DiscordChatOpsBot):
         self.bot = bot
 
-    @dcommands.command(name="analyze", description="Run OSINT analysis on a target")
-    async def analyze_command(self, ctx: dcommands.Context, *, args: str = "") -> None:
-        full_text = f"/analyze {args}" if args else "/analyze"
-        parsed = parse_analyze_command(full_text)
-        if not parsed:
-            await ctx.send(
-                "Usage: `?analyze <platform>/<username>`\n"
-                "Example: `?analyze twitter/username`"
-            )
-            return
+    def _build_vision_error_summary(self, vision_stats: Dict[str, Any]) -> str:
+        """Build user-friendly error summary for Discord."""
+        total = vision_stats.get("total", 0)
+        analyzed = vision_stats.get("analyzed", 0)
+        failed = vision_stats.get("failed", 0)
+        skipped = vision_stats.get("skipped", 0)
+        error_summaries = vision_stats.get("error_summaries", [])
 
-        platform, username = parsed
+        msg = "📸 **Image Analysis Summary:**\n\n"
+        msg += f"✅ {analyzed}/{total} images analyzed successfully\n"
+
+        if failed > 0:
+            msg += f"❌ {failed} images failed\n"
+        if skipped > 0:
+            msg += f"⏭️ {skipped} images skipped\n"
+
+        if error_summaries:
+            msg += "\n**Issues:**\n"
+            for summary in error_summaries[:5]:  # Limit to top 5 to avoid spam
+                msg += f"• {summary}\n"
+            if len(error_summaries) > 5:
+                msg += f"\n... and {len(error_summaries) - 5} more issues. Check logs for details.\n"
+
+        return msg
+
+    async def _perform_analysis(
+        self,
+        target_message: discord.Message | discord.Interaction,
+        platform: str,
+        username: str,
+        query: Optional[str],
+        force_refresh: bool = False,
+    ) -> None:
+        # Determine sender functions
+        if isinstance(target_message, discord.Interaction):
+            send = target_message.followup.send
+            edit = target_message.edit_original_response
+        else:
+            send = target_message.channel.send
+            edit = target_message.edit
 
         if platform not in FETCHERS:
-            await ctx.send(
+            await send(
                 f"Unknown platform `{platform}`. "
                 f"Known: {', '.join(sorted(FETCHERS.keys()))}"
             )
@@ -227,21 +285,27 @@ class AnalyzeCog(dcommands.Cog):
             check_creds=True
         )
         if platform not in available:
-            await ctx.send(
+            await send(
                 f"Platform `{platform}` is not configured (missing credentials). "
                 f"Configured: {', '.join(available) or 'none'}"
             )
             return
 
-        status_msg = await ctx.send(
+        # Status message
+        content = (
             f"Running analysis for `{platform}/{username}`... (this may take a minute)"
         )
+        if isinstance(target_message, discord.Interaction):
+            status_msg = await target_message.original_response()
+            await edit(content=content)
+        else:
+            status_msg = await send(content)
 
         def run_analysis():
             return self.bot.agent.analyze(
                 {platform: [username]},
-                DEFAULT_ANALYSIS_QUERY,
-                force_refresh=False,
+                query or DEFAULT_ANALYSIS_QUERY,
+                force_refresh=force_refresh,
                 fetch_options={"default_count": 50},
             )
 
@@ -249,30 +313,75 @@ class AnalyzeCog(dcommands.Cog):
             result = await asyncio.to_thread(run_analysis)
         except Exception as e:
             logger.exception("analyze failed: %s", e)
-            await status_msg.edit(
-                content=f"Analysis crashed: `{type(e).__name__}: {e}`"
-            )
+            await edit(content=f"Analysis crashed: `{type(e).__name__}: {e}`")
             return
 
         if result.get("error"):
             report = result.get("report", "Unknown error")
-            # Check for rate limit specific errors
             if "rate limit" in report.lower():
-                await status_msg.edit(
-                    content="⚠️ **Rate Limit Hit:** The analysis was rate-limited. Please wait a few minutes and try again, or use `/refresh` after the cooldown period."
+                await edit(
+                    content="⚠️ **Rate Limit Hit:** The analysis was rate-limited. Please wait a few minutes and try again."
                 )
             else:
-                await status_msg.edit(
+                await edit(
                     content=f"Analysis failed:\n\n{report[: DISCORD_MAX_LEN - 100]}"
                 )
             return
 
         report = result.get("report") or ""
-
         chunks = chunk_discord_text(report)
         for i, chunk in enumerate(chunks):
             prefix = f"(part {i + 1}/{len(chunks)})\n\n" if len(chunks) > 1 else ""
-            await ctx.send(prefix + chunk)
+            await send(prefix + chunk)
+
+        # Send image processing error summary if there were failures
+        vision_stats = result.get("metadata", {}).get("vision_stats", {})
+        if vision_stats.get("failed", 0) > 0 or vision_stats.get("skipped", 0) > 0:
+            error_msg = self._build_vision_error_summary(vision_stats)
+            await send(error_msg)
+
+    @dcommands.command(name="analyze", description="Run OSINT analysis on a target")
+    async def analyze_command(self, ctx: dcommands.Context, *, args: str = "") -> None:
+        full_text = f"/analyze {args}" if args else "/analyze"
+        parsed = parse_analyze_command(full_text)
+        if not parsed:
+            await ctx.send(
+                "Usage: `/analyze <platform> <username>`\n"
+                "Example: `/analyze twitter username`"
+            )
+            return
+
+        platform, username, query = parsed
+        await self._perform_analysis(ctx.message, platform, username, query, False)
+
+    @app_commands.command(name="analyze", description="Run OSINT analysis on a target")
+    @app_commands.describe(
+        platform="Platform (e.g. bluesky, reddit, twitter)",
+        username="Username to analyze",
+        query="Specific question or custom query for the LLM (optional)",
+    )
+    async def analyze_slash(
+        self,
+        interaction: discord.Interaction,
+        platform: str,
+        username: str,
+        query: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer()
+        await self._perform_analysis(interaction, platform, username, query, False)
+
+    @analyze_slash.autocomplete("platform")
+    async def platform_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        available = self.bot.agent.client_manager.get_available_platforms(
+            check_creds=True
+        )
+        return [
+            app_commands.Choice(name=p.capitalize(), value=p)
+            for p in available
+            if current.lower() in p.lower()
+        ][:25]
 
 
 class RefreshCog(dcommands.Cog):
@@ -285,95 +394,78 @@ class RefreshCog(dcommands.Cog):
         parsed = parse_analyze_command(full_text)
         if not parsed:
             await ctx.send(
-                "Usage: `?refresh <platform>/<username>`\n"
-                "Example: `?refresh twitter/username`"
+                "Usage: `/refresh <platform> <username>`\n"
+                "Example: `/refresh twitter username`"
             )
             return
 
-        platform, username = parsed
-
-        if platform not in FETCHERS:
-            await ctx.send(
-                f"Unknown platform `{platform}`. "
-                f"Known: {', '.join(sorted(FETCHERS.keys()))}"
+        platform, username, query = parsed
+        analyze_cog = self.bot.get_cog("AnalyzeCog")
+        if analyze_cog:
+            await analyze_cog._perform_analysis(
+                ctx.message, platform, username, query, True
             )
-            return
+        else:
+            await ctx.send("AnalyzeCog not found.")
 
+    @app_commands.command(
+        name="refresh", description="Force refresh and analyze a target"
+    )
+    @app_commands.describe(
+        platform="Platform (e.g. bluesky, reddit, twitter)",
+        username="Username to analyze",
+        query="Specific question or custom query for the LLM (optional)",
+    )
+    async def refresh_slash(
+        self,
+        interaction: discord.Interaction,
+        platform: str,
+        username: str,
+        query: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer()
+        analyze_cog = self.bot.get_cog("AnalyzeCog")
+        if analyze_cog:
+            await analyze_cog._perform_analysis(
+                interaction, platform, username, query, True
+            )
+        else:
+            await interaction.followup.send("AnalyzeCog not found.")
+
+    @refresh_slash.autocomplete("platform")
+    async def platform_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
         available = self.bot.agent.client_manager.get_available_platforms(
             check_creds=True
         )
-        if platform not in available:
-            await ctx.send(
-                f"Platform `{platform}` is not configured (missing credentials). "
-                f"Configured: {', '.join(available) or 'none'}"
-            )
-            return
-
-        status_msg = await ctx.send(
-            f"Force refreshing and analyzing `{platform}/{username}`... (this may take a minute)"
-        )
-
-        def run_analysis():
-            return self.bot.agent.analyze(
-                {platform: [username]},
-                DEFAULT_ANALYSIS_QUERY,
-                force_refresh=True,
-                fetch_options={"default_count": 50},
-            )
-
-        try:
-            result = await asyncio.to_thread(run_analysis)
-        except Exception as e:
-            logger.exception("refresh analyze failed: %s", e)
-            await status_msg.edit(
-                content=f"Analysis crashed: `{type(e).__name__}: {e}`"
-            )
-            return
-
-        if result.get("error"):
-            report = result.get("report", "Unknown error")
-            # Check for rate limit specific errors
-            if "rate limit" in report.lower():
-                await status_msg.edit(
-                    content="⚠️ **Rate Limit Hit:** The refresh was rate-limited. Please wait a few minutes and try again."
-                )
-            else:
-                await status_msg.edit(
-                    content=f"Analysis failed:\n\n{report[: DISCORD_MAX_LEN - 100]}"
-                )
-            return
-
-        report = result.get("report") or ""
-
-        chunks = chunk_discord_text(report)
-        for i, chunk in enumerate(chunks):
-            prefix = f"(part {i + 1}/{len(chunks)})\n\n" if len(chunks) > 1 else ""
-            await ctx.send(prefix + chunk)
+        return [
+            app_commands.Choice(name=p.capitalize(), value=p)
+            for p in available
+            if current.lower() in p.lower()
+        ][:25]
 
 
 class MonitorCog(dcommands.Cog):
     def __init__(self, bot: DiscordChatOpsBot):
         self.bot = bot
 
-    @dcommands.command(
-        name="monitor",
-        description="Start continuous monitoring for keywords",
-    )
-    async def monitor_command(self, ctx: dcommands.Context, *, args: str = "") -> None:
-        full_text = f"/monitor {args}" if args else "/monitor"
-        parsed = parse_monitor_command(full_text)
-        if not parsed:
-            await ctx.send(
-                "Usage:\n"
-                '`?monitor <platform>/<username> for keywords "crypto, wallet"`\n'
-                'Example: `?monitor bluesky/username for keywords "crypto, wallet"`'
-            )
-            return
-
-        platform, username, keywords, condition = parsed
+    async def _perform_monitor(
+        self,
+        target_obj: discord.Message | discord.Interaction,
+        platform: str,
+        username: str,
+        keywords: List[str],
+        condition: str,
+    ) -> None:
+        send = (
+            target_obj.followup.send
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.send
+        )
 
         if platform not in FETCHERS:
-            await ctx.send(
+            await send(
                 f"Unknown platform `{platform}`. "
                 f"Known: {', '.join(sorted(FETCHERS.keys()))}"
             )
@@ -383,14 +475,18 @@ class MonitorCog(dcommands.Cog):
             check_creds=True
         )
         if platform not in available:
-            await ctx.send(
+            await send(
                 f"Platform `{platform}` is not configured (missing credentials). "
                 f"Configured: {', '.join(available) or 'none'}"
             )
             return
 
         session_manager = SessionManager(Path("data"))
-        channel_id = ctx.channel.id
+        channel_id = (
+            target_obj.channel_id
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.id
+        )
         target = f"{platform}/{username}"
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -406,14 +502,12 @@ class MonitorCog(dcommands.Cog):
                         and rule.get("target") == target
                         and rule.get("condition") == condition
                     ):
-                        await ctx.send(
+                        await send(
                             f"Already monitoring `{target}` for `{condition}` in this channel."
                         )
                         return
         except Exception:
-            logger.exception(
-                "De-duplication scan failed; proceeding to create a new rule."
-            )
+            logger.exception("De-duplication scan failed; proceeding.")
 
         session = session_manager.create(
             name=f"Discord Monitor: {target}",
@@ -435,7 +529,7 @@ class MonitorCog(dcommands.Cog):
         session.monitoring_rules.append(rule)
         session_manager.save(session)
 
-        await ctx.send(
+        await send(
             "Monitoring enabled.\n"
             f"Target: `{target}`\n"
             f"Keywords: `{', '.join(keywords)}`\n"
@@ -443,13 +537,79 @@ class MonitorCog(dcommands.Cog):
             "I will check for new posts in the background and only alert you on matches."
         )
 
+    @dcommands.command(
+        name="monitor",
+        description="Start continuous monitoring for keywords",
+    )
+    async def monitor_command(self, ctx: dcommands.Context, *, args: str = "") -> None:
+        full_text = f"/monitor {args}" if args else "/monitor"
+        parsed = parse_monitor_command(full_text)
+        if not parsed:
+            await ctx.send(
+                "Usage: `/monitor <platform> <username> <keywords>`\n"
+                "Example: `/monitor bluesky username crypto, wallet`"
+            )
+            return
+
+        platform, username, keywords, condition = parsed
+        await self._perform_monitor(
+            ctx.message, platform, username, keywords, condition
+        )
+
+    @app_commands.command(
+        name="monitor",
+        description="Start continuous monitoring for keywords",
+    )
+    @app_commands.describe(
+        platform="Platform (e.g. bluesky, reddit, twitter)",
+        username="Username to monitor",
+        keywords="Comma-separated keywords (e.g. crypto, wallet)",
+    )
+    async def monitor_slash(
+        self,
+        interaction: discord.Interaction,
+        platform: str,
+        username: str,
+        keywords: str,
+    ) -> None:
+        await interaction.response.defer()
+        keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+        if not keyword_list:
+            await interaction.followup.send("Please provide at least one keyword.")
+            return
+
+        condition = f"keywords: {', '.join(keyword_list)}"
+        username = sanitize_username(username.strip())
+        await self._perform_monitor(
+            interaction, platform.lower().strip(), username, keyword_list, condition
+        )
+
+    @monitor_slash.autocomplete("platform")
+    async def platform_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        available = self.bot.agent.client_manager.get_available_platforms(
+            check_creds=True
+        )
+        return [
+            app_commands.Choice(name=p.capitalize(), value=p)
+            for p in available
+            if current.lower() in p.lower()
+        ][:25]
+
 
 class MonitorControlCog(dcommands.Cog):
     def __init__(self, bot: DiscordChatOpsBot):
         self.bot = bot
 
-    @dcommands.command(name="listmonitors", description="List active monitoring rules")
-    async def listmonitors_command(self, ctx: dcommands.Context) -> None:
+    async def _list_monitors(
+        self, target_obj: discord.Message | discord.Interaction
+    ) -> None:
+        send = (
+            target_obj.followup.send
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.send
+        )
         session_manager = SessionManager(Path("data"))
         rules = []
         try:
@@ -462,11 +622,11 @@ class MonitorControlCog(dcommands.Cog):
                         rules.append(rule)
         except Exception:
             logger.exception("Failed to list monitoring rules")
-            await ctx.send("Error listing monitoring rules.")
+            await send("Error listing monitoring rules.")
             return
 
         if not rules:
-            await ctx.send("No active monitoring rules.")
+            await send("No active monitoring rules.")
             return
 
         msg = "**Active Monitoring Rules:**\n\n"
@@ -477,15 +637,30 @@ class MonitorControlCog(dcommands.Cog):
                 f"  Channel: `{rule.get('alert_channel', '?')}`\n"
                 f"  Created: `{rule.get('created_at', '?')[:19]}`\n\n"
             )
-        await ctx.send(msg)
+        await send(msg)
 
-    @dcommands.command(name="stopmonitor", description="Stop a monitoring rule by ID")
-    async def stopmonitor_command(
-        self, ctx: dcommands.Context, *, rule_id: str = ""
+    @dcommands.command(name="listmonitors", description="List active monitoring rules")
+    async def listmonitors_command(self, ctx: dcommands.Context) -> None:
+        await self._list_monitors(ctx.message)
+
+    @app_commands.command(
+        name="listmonitors", description="List active monitoring rules"
+    )
+    async def listmonitors_slash(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        await self._list_monitors(interaction)
+
+    async def _stop_monitor(
+        self, target_obj: discord.Message | discord.Interaction, rule_id: str
     ) -> None:
+        send = (
+            target_obj.followup.send
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.send
+        )
         if not rule_id.strip():
-            await ctx.send(
-                "Usage: `?stopmonitor <rule_id>`\nUse `?listmonitors` to find rule IDs."
+            await send(
+                "Usage: `/stopmonitor <rule_id>`\nUse `/listmonitors` to find rule IDs."
             )
             return
 
@@ -508,44 +683,60 @@ class MonitorControlCog(dcommands.Cog):
                     break
         except Exception:
             logger.exception("Failed to stop monitoring rule %s", rule_id)
-            await ctx.send(f"Error stopping rule `{rule_id}`.")
+            await send(f"Error stopping rule `{rule_id}`.")
             return
 
         if found:
-            await ctx.send(f"Monitoring rule `{rule_id}` stopped.")
+            await send(f"Monitoring rule `{rule_id}` stopped.")
         else:
-            await ctx.send(f"Rule `{rule_id}` not found.")
+            await send(f"Rule `{rule_id}` not found.")
+
+    @dcommands.command(name="stopmonitor", description="Stop a monitoring rule by ID")
+    async def stopmonitor_command(
+        self, ctx: dcommands.Context, *, rule_id: str = ""
+    ) -> None:
+        await self._stop_monitor(ctx.message, rule_id)
+
+    @app_commands.command(
+        name="stopmonitor", description="Stop a monitoring rule by ID"
+    )
+    @app_commands.describe(rule_id="The 8-character ID of the rule to stop")
+    async def stopmonitor_slash(
+        self, interaction: discord.Interaction, rule_id: str
+    ) -> None:
+        await interaction.response.defer()
+        await self._stop_monitor(interaction, rule_id)
 
 
 class ContactsCog(dcommands.Cog):
     def __init__(self, bot: DiscordChatOpsBot):
         self.bot = bot
 
-    @dcommands.command(
-        name="contacts", description="Extract network contacts for a target"
-    )
-    async def contacts_command(self, ctx: dcommands.Context, *, args: str = "") -> None:
-        full_text = f"/contacts {args}" if args else "/contacts"
-        parsed = parse_analyze_command(full_text)
-        if not parsed:
-            await ctx.send(
-                "Usage: `?contacts <platform>/<username>`\n"
-                "Example: `?contacts twitter/username`"
-            )
-            return
-
-        platform, username = parsed
+    async def _perform_contacts(
+        self,
+        target_obj: discord.Message | discord.Interaction,
+        platform: str,
+        username: str,
+    ) -> None:
+        send = (
+            target_obj.followup.send
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.send
+        )
 
         if platform not in FETCHERS:
-            await ctx.send(
+            await send(
                 f"Unknown platform `{platform}`. "
                 f"Known: {', '.join(sorted(FETCHERS.keys()))}"
             )
             return
 
-        status_msg = await ctx.send(
-            f"Extracting contacts for `{platform}/{username}`..."
-        )
+        # Status message
+        content = f"Extracting contacts for `{platform}/{username}`..."
+        if isinstance(target_obj, discord.Interaction):
+            await target_obj.edit_original_response(content=content)
+        else:
+            status_msg = await send(content)
 
         def run_contacts():
             return self.bot.agent.get_contacts({platform: [username]})
@@ -554,15 +745,19 @@ class ContactsCog(dcommands.Cog):
             contacts = await asyncio.to_thread(run_contacts)
         except Exception as e:
             logger.exception("contacts extraction failed: %s", e)
-            await status_msg.edit(
-                content=f"Contact extraction failed: `{type(e).__name__}: {e}`"
-            )
+            error_msg = f"Contact extraction failed: `{type(e).__name__}: {e}`"
+            if isinstance(target_obj, discord.Interaction):
+                await target_obj.edit_original_response(content=error_msg)
+            else:
+                await status_msg.edit(content=error_msg)
             return
 
         if not contacts:
-            await status_msg.edit(
-                content=f"No contacts found for `{platform}/{username}`."
-            )
+            msg = f"No contacts found for `{platform}/{username}`."
+            if isinstance(target_obj, discord.Interaction):
+                await target_obj.edit_original_response(content=msg)
+            else:
+                await status_msg.edit(content=msg)
             return
 
         msg = f"**Network Contacts for `{platform}/{username}`:**\n\n"
@@ -575,17 +770,68 @@ class ContactsCog(dcommands.Cog):
         if len(contacts) > 20:
             msg += f"\n... and {len(contacts) - 20} more contacts."
 
+        if isinstance(target_obj, discord.Interaction):
+            await target_obj.edit_original_response(content="Contacts extracted.")
+
         chunks = chunk_discord_text(msg)
         for chunk in chunks:
-            await ctx.send(chunk)
+            await send(chunk)
+
+    @dcommands.command(
+        name="contacts", description="Extract network contacts for a target"
+    )
+    async def contacts_command(self, ctx: dcommands.Context, *, args: str = "") -> None:
+        full_text = f"/contacts {args}" if args else "/contacts"
+        parsed = parse_analyze_command(full_text)
+        if not parsed:
+            await ctx.send(
+                "Usage: `/contacts <platform> <username>`\n"
+                "Example: `/contacts twitter username`"
+            )
+            return
+
+        platform, username, _ = parsed
+        await self._perform_contacts(ctx.message, platform, username)
+
+    @app_commands.command(
+        name="contacts", description="Extract network contacts for a target"
+    )
+    @app_commands.describe(
+        platform="Platform (e.g. bluesky, reddit, twitter)",
+        username="Username to extract contacts for",
+    )
+    async def contacts_slash(
+        self, interaction: discord.Interaction, platform: str, username: str
+    ) -> None:
+        await interaction.response.defer()
+        await self._perform_contacts(
+            interaction, platform.lower().strip(), sanitize_username(username.strip())
+        )
+
+    @contacts_slash.autocomplete("platform")
+    async def platform_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        available = list(FETCHERS.keys())
+        return [
+            app_commands.Choice(name=p.capitalize(), value=p)
+            for p in available
+            if current.lower() in p.lower()
+        ][:25]
 
 
 class StatusCog(dcommands.Cog):
     def __init__(self, bot: DiscordChatOpsBot):
         self.bot = bot
 
-    @dcommands.command(name="status", description="Bot health and platform status")
-    async def status_command(self, ctx: dcommands.Context) -> None:
+    async def _send_status(
+        self, target_obj: discord.Message | discord.Interaction
+    ) -> None:
+        send = (
+            target_obj.followup.send
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.send
+        )
         try:
             available = self.bot.agent.client_manager.get_available_platforms(
                 check_creds=True
@@ -601,28 +847,43 @@ class StatusCog(dcommands.Cog):
 
             msg += f"\n**Supported Platforms:** {', '.join(sorted(FETCHERS.keys()))}\n"
 
-            await ctx.send(msg)
+            await send(msg)
         except Exception as e:
             logger.exception("status command failed: %s", e)
-            await ctx.send(f"Status check failed: `{type(e).__name__}: {e}`")
+            await send(f"Status check failed: `{type(e).__name__}: {e}`")
+
+    @dcommands.command(name="status", description="Bot health and platform status")
+    async def status_command(self, ctx: dcommands.Context) -> None:
+        await self._send_status(ctx.message)
+
+    @app_commands.command(name="status", description="Bot health and platform status")
+    async def status_slash(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        await self._send_status(interaction)
 
 
 class SessionsCog(dcommands.Cog):
     def __init__(self, bot: DiscordChatOpsBot):
         self.bot = bot
 
-    @dcommands.command(name="sessions", description="List active sessions")
-    async def sessions_command(self, ctx: dcommands.Context) -> None:
+    async def _send_sessions(
+        self, target_obj: discord.Message | discord.Interaction
+    ) -> None:
+        send = (
+            target_obj.followup.send
+            if isinstance(target_obj, discord.Interaction)
+            else target_obj.channel.send
+        )
         session_manager = SessionManager(Path("data"))
         try:
             sessions = session_manager.list_all()
         except Exception as e:
             logger.exception("sessions list failed: %s", e)
-            await ctx.send(f"Failed to list sessions: `{type(e).__name__}: {e}`")
+            await send(f"Failed to list sessions: `{type(e).__name__}: {e}`")
             return
 
         if not sessions:
-            await ctx.send("No active sessions.")
+            await send("No active sessions.")
             return
 
         msg = "**Active Sessions:**\n\n"
@@ -636,7 +897,16 @@ class SessionsCog(dcommands.Cog):
         if len(sessions) > 10:
             msg += f"... and {len(sessions) - 10} more sessions."
 
-        await ctx.send(msg)
+        await send(msg)
+
+    @dcommands.command(name="sessions", description="List active sessions")
+    async def sessions_command(self, ctx: dcommands.Context) -> None:
+        await self._send_sessions(ctx.message)
+
+    @app_commands.command(name="sessions", description="List active sessions")
+    async def sessions_slash(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        await self._send_sessions(interaction)
 
 
 async def send_discord_channel_alert(
